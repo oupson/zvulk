@@ -4,23 +4,53 @@ const builtin = @import("builtin");
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
 // runner.
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
     // for restricting supported target set are available.
     const target = b.standardTargetOptions(.{});
 
-    const a = [_][]const u8{
-        "C://Users/oupso/Documents/Code/C/vcpkg/installed/x64-windows/tools/shaderc/glslc.exe",
-    };
-    const tool_step_fragment = b.addSystemCommand(&a);
-    tool_step_fragment.addFileArg(b.path("shaders/shader.frag"));
-    const output_frag = tool_step_fragment.addPrefixedOutputFileArg("-o", "fragment.spv");
+    const output_frag, const output_vertex = build_shaders: {
+        switch (builtin.target.os.tag) {
+            .linux => {
+                const tool = b.addExecutable(.{
+                    .name = "shader_compile",
+                    .root_source_file = b.path("tools/shader_compile.zig"),
+                    .target = b.graph.host,
+                });
 
-    const tool_step_vertex = b.addSystemCommand(&a);
-    tool_step_vertex.addFileArg(b.path("shaders/shader.vert"));
-    const output_vertex = tool_step_vertex.addPrefixedOutputFileArg("-o", "vertex.spv");
+                tool.linkSystemLibrary("shaderc");
+                tool.linkLibC();
+
+                const tool_step_fragment = b.addRunArtifact(tool);
+                tool_step_fragment.addFileArg(b.path("shaders/shader.frag"));
+                const output_frag = tool_step_fragment.addOutputFileArg("fragment.spv");
+
+                const tool_step_vertex = b.addRunArtifact(tool);
+                tool_step_vertex.addFileArg(b.path("shaders/shader.vert"));
+                const output_vertex = tool_step_vertex.addOutputFileArg("vertex.spv");
+                break :build_shaders .{ output_frag, output_vertex };
+            },
+            .windows => {
+                const a = [_][]const u8{
+                    "glslc.exe",
+                };
+                const tool_step_fragment = b.addSystemCommand(&a);
+                tool_step_fragment.addFileArg(b.path("shaders/shader.frag"));
+                const output_frag = tool_step_fragment.addPrefixedOutputFileArg("-o", "fragment.spv");
+
+                const tool_step_vertex = b.addSystemCommand(&a);
+                tool_step_vertex.addFileArg(b.path("shaders/shader.vert"));
+                const output_vertex = tool_step_vertex.addPrefixedOutputFileArg("-o", "vertex.spv");
+
+                break :build_shaders .{ output_frag, output_vertex };
+            },
+            else => {
+                unreachable;
+            },
+        }
+    };
 
     // Standard optimization options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
@@ -75,30 +105,33 @@ pub fn build(b: *std.Build) void {
             exe.linkSystemLibrary("wayland-client");
             exe.linkSystemLibrary("xkbcommon");
         },
-        .windows => {},
+        .windows => {
+            var env = try std.process.getEnvMap(b.allocator);
+            defer env.deinit();
+
+            // TODO: arch
+            if (env.get("VCPKG_ROOT")) |root| {
+                const lib_path = try std.fs.path.join(b.allocator, &.{ root, "installed", "x64-windows", "lib" });
+                defer b.allocator.free(lib_path);
+                const include_path = try std.fs.path.join(b.allocator, &.{ root, "installed", "x64-windows", "include" });
+                defer b.allocator.free(lib_path);
+                exe.addLibraryPath(.{ .cwd_relative = lib_path });
+                exe.addIncludePath(.{ .cwd_relative = include_path });
+            }
+
+            const static_libs = [_][]const u8{
+                "user32",
+            };
+            for (static_libs) |libl| exe.linkSystemLibrary(libl);
+        },
         else => {
             unreachable;
         },
     }
 
     exe.linkLibC();
-    exe.addLibraryPath(.{ .cwd_relative = "C://Users/oupso/Documents/Code/C/vcpkg/installed/x64-windows/lib" });
-    exe.addIncludePath(.{ .cwd_relative = "C://Users/oupso/Documents/Code/C/vcpkg/installed/x64-windows/include" });
+
     exe.linkSystemLibrary("vulkan-1");
-    // TODO
-    const static_libs = [_][]const u8{
-        "setupapi",
-        "user32",
-        "gdi32",
-        "winmm",
-        "imm32",
-        "ole32",
-        "oleaut32",
-        "shell32",
-        "version",
-        "uuid",
-    };
-    for (static_libs) |libl| exe.linkSystemLibrary(libl);
 
     exe.root_module.addAnonymousImport("shaders/fragment.spv", .{
         .root_source_file = output_frag,
