@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const log = std.log.scoped(.renderer);
+
 const vulkan = @cImport({
     @cInclude("vulkan/vulkan.h");
 });
@@ -12,7 +14,6 @@ const validationLayerName: [1][:0]const u8 = .{
 const Chunk = @import("chunk.zig");
 const TextureManager = @import("texture_manager.zig");
 const BrickMap = @import("brickmap.zig");
-const WSI = @import("wsi.zig");
 
 const deviceExtensions: [3]*align(1) const [:0]u8 = .{
     @ptrCast(vulkan.VK_KHR_SWAPCHAIN_EXTENSION_NAME),
@@ -135,6 +136,7 @@ const Swapchain = struct {
         width: i32,
         height: i32,
     ) !@This() {
+        log.debug("creating", .{});
         const swapChain, const format, const extent = try createSwapChain(
             allocator,
             device,
@@ -276,11 +278,13 @@ textureInfoBuffersMemory: []vulkan.VkDeviceMemory,
 textureInfoBuffersMapped: [][]u8,
 
 pub fn new(
+    W: type,
     vulkanInstance: Instance,
     allocator: Allocator,
     textureManager: TextureManager,
-    wsi: WSI,
+    wsi: W,
 ) !Self {
+    log.debug("new", .{});
     const instance = vulkanInstance.instance;
     const vulkanSurface: vulkan.VkSurfaceKHR = @ptrCast(try wsi.createVulkanSurface(@ptrCast(instance)));
 
@@ -524,6 +528,9 @@ pub fn deinit(self: *Self) !void {
 }
 
 pub fn recreate(self: *Self, width: i32, height: i32) !void {
+    if (vulkan.VK_SUCCESS != vulkan.vkDeviceWaitIdle(self.device)) {
+        return error.WaitDeviceIdleFailed;
+    }
     if (self.swapChain) |*swapchain| {
         swapchain.deinit();
     }
@@ -1999,7 +2006,9 @@ fn endSingleTimeCommands(
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    if (vulkan.VK_SUCCESS != vulkan.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null)) {
+    const e = vulkan.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+    if (vulkan.VK_SUCCESS != e) {
+        log.err("failed {}", .{e});
         return error.QueueSubmitFailed;
     }
     if (vulkan.VK_SUCCESS != vulkan.vkQueueWaitIdle(graphicsQueue)) {

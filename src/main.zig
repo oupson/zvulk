@@ -3,11 +3,7 @@ const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 
-const App = switch (builtin.target.os.tag) {
-    .linux => @import("app.zig"),
-    .windows => @import("windows.zig"),
-    else => @panic("unimplented"),
-};
+const App = @import("app.zig");
 const Renderer = @import("renderer.zig");
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
