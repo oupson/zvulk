@@ -45,8 +45,9 @@ pub fn init(allocator: Allocator, listener: Wsi.Listener) !Self {
 
 pub fn connect(self: *Self) !void {
     const hInstance = windows.GetModuleHandleW(null);
+    const name = "vkwc";
 
-    const windowClass: windows.WNDCLASSEXW = .{
+    const windowClass: windows.WNDCLASSEX = .{
         .cbSize = @sizeOf(windows.WNDCLASSEXW), // cbSize
         .style = windows.CS_OWNDC, // | CS_HREDRAW | CS_VREDRAW*/, // style -- some window behavior
         .lpfnWndProc = wndProc, // lpfnWndProc -- set event handler
@@ -57,12 +58,12 @@ pub fn connect(self: *Self) !void {
         .hCursor = null, // hCursor -- cursor inside
         .hbrBackground = null, //(HBRUSH)( COLOR_WINDOW + 1 ), // hbrBackground
         .lpszMenuName = null, // lpszMenuName -- menu class name
-        .lpszClassName = W("vkwc"), // lpszClassName -- window class name/identificator
+        .lpszClassName = name, // lpszClassName -- window class name/identificator
         .hIconSm = windows.LoadIconA(null, windows.IDI_APPLICATION), // hIconSm
     };
 
     // register window class
-    const classAtom = windows.RegisterClassExW(&windowClass);
+    const classAtom = windows.RegisterClassExA(&windowClass);
     if (classAtom == 0) {
         return error.FailedToRegisterWindow;
     }
@@ -80,10 +81,11 @@ pub fn connect(self: *Self) !void {
         // throw string( "Trouble adjusting window size: " ) + to_string( GetLastError() );
         return error.FailedToAdjustWindowSize;
     }
+
     const hWnd = windows.CreateWindowExA(
         windowedExStyle,
         windows.MAKEINTATOM(classAtom),
-        "vulkan",
+        name,
         windowedStyle,
         windows.CW_USEDEFAULT,
         windows.CW_USEDEFAULT,
@@ -113,6 +115,11 @@ pub fn connect(self: *Self) !void {
     _ = windows.SetForegroundWindow(hWnd); // TODO
 
     _ = windows.SetCursor(null);
+    _ = windows.GetWindowRect(self.hWnd, &self.wRect);
+    _ = windows.SetCursorPos(
+        self.wRect.left + @divTrunc(self.wRect.right - self.wRect.left, 2),
+        self.wRect.top + @divTrunc(self.wRect.bottom - self.wRect.top, 2),
+    );
 
     const rid = windows.RAWINPUTDEVICE{
         .usUsagePage = 0x01, // HID_USAGE_PAGE_GENERIC
@@ -130,7 +137,7 @@ pub fn deinit(self: *Self) void {
 
 pub fn createVulkanSurface(self: *const Self, vkInstance: windows.VkInstance) anyerror!windows.VkSurfaceKHR {
     var createInfo = windows.VkWin32SurfaceCreateInfoKHR{
-        .sType = windows.VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+        .sType = windows.VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
         .hinstance = self.hInstance,
         .hwnd = self.hWnd,
     };
@@ -303,12 +310,6 @@ fn wndProc(hWnd: windows.HWND, uMsg: windows.UINT, wParam: windows.WPARAM, lPara
     }
 }
 
-pub inline fn GET_X_LPARAM(lparam: windows.LPARAM) i32 {
-    return @intCast(@as(i16, @bitCast(@as(u16, @intCast(lparam & 0xffff)))));
-}
-pub inline fn GET_Y_LPARAM(lparam: windows.LPARAM) i32 {
-    return @intCast(@as(i16, @bitCast(@as(u16, @intCast((lparam >> 16) & 0xffff)))));
-}
 pub inline fn HIWORD(dword: windows.DWORD) std.os.windows.WORD {
     return @as(std.os.windows.WORD, @bitCast(@as(u16, @intCast((dword >> 16) & 0xffff))));
 }
