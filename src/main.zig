@@ -1,9 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const wayland = @import("wayland");
-const wl = wayland.client.wl;
-
 const Allocator = std.mem.Allocator;
 
 const App = @import("app.zig");

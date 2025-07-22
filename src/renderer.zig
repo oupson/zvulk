@@ -1,13 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const log = std.log.scoped(.renderer);
+
 const vulkan = @cImport({
     @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan/vulkan_wayland.h");
 });
-
-const wayland = @import("wayland");
-const wl = wayland.client.wl;
 
 const validationLayerName: [1][:0]const u8 = .{
     "VK_LAYER_KHRONOS_validation",
@@ -23,9 +21,8 @@ const deviceExtensions: [3]*align(1) const [:0]u8 = .{
     @ptrCast(vulkan.VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME),
 };
 
-const requiredExtensions: [4]*align(1) const [:0]u8 = .{
+const requiredExtensions: [3]*align(1) const [:0]u8 = .{
     @ptrCast(vulkan.VK_KHR_SURFACE_EXTENSION_NAME),
-    @ptrCast(vulkan.VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME),
     @ptrCast(vulkan.VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME),
     @ptrCast(vulkan.VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME),
 };
@@ -48,8 +45,8 @@ pub const Camera = struct {
 pub const Instance = struct {
     instance: vulkan.VkInstance,
 
-    pub fn init(allocator: Allocator) !@This() {
-        const instance = try createInstance(allocator);
+    pub fn init(allocator: Allocator, platformRequiredExtensions: []const *align(1) const [:0]u8) !@This() {
+        const instance = try createInstance(allocator, platformRequiredExtensions);
         return @This(){
             .instance = instance,
         };
@@ -131,7 +128,7 @@ const Swapchain = struct {
         allocator: Allocator,
         device: vulkan.VkDevice,
         physicalDevice: vulkan.VkPhysicalDevice,
-        msaaSamples: c_uint,
+        msaaSamples: vulkan.VkSampleCountFlagBits,
         surface: vulkan.VkSurfaceKHR,
         descriptorSetLayout: vulkan.VkDescriptorSetLayout,
         commandPool: vulkan.VkCommandPool,
@@ -139,6 +136,7 @@ const Swapchain = struct {
         width: i32,
         height: i32,
     ) !@This() {
+        log.debug("creating swapchain {}x{}", .{ width, height });
         const swapChain, const format, const extent = try createSwapChain(
             allocator,
             device,
@@ -249,7 +247,7 @@ instance: vulkan.VkInstance,
 vulkanSurface: vulkan.VkSurfaceKHR,
 device: vulkan.VkDevice,
 physicalDevice: vulkan.VkPhysicalDevice,
-msaaSamples: c_uint,
+msaaSamples: vulkan.VkSampleCountFlagBits,
 graphicQueue: vulkan.VkQueue,
 presentQueue: vulkan.VkQueue,
 swapChain: ?Swapchain,
@@ -280,14 +278,15 @@ textureInfoBuffersMemory: []vulkan.VkDeviceMemory,
 textureInfoBuffersMapped: [][]u8,
 
 pub fn new(
+    W: type,
     vulkanInstance: Instance,
     allocator: Allocator,
-    display: *wl.Display,
-    surface: *wl.Surface,
     textureManager: TextureManager,
+    wsi: W,
 ) !Self {
+    log.debug("new", .{});
     const instance = vulkanInstance.instance;
-    const vulkanSurface = try createSurface(instance, display, surface);
+    const vulkanSurface: vulkan.VkSurfaceKHR = @ptrCast(try wsi.createVulkanSurface(@ptrCast(instance)));
 
     const physicalDevice, const msaaSamples = try getPhysicalDevice(instance, allocator, vulkanSurface);
 
@@ -529,6 +528,11 @@ pub fn deinit(self: *Self) !void {
 }
 
 pub fn recreate(self: *Self, width: i32, height: i32) !void {
+    if (vulkan.VK_SUCCESS != vulkan.vkDeviceWaitIdle(self.device)) {
+        return error.WaitDeviceIdleFailed;
+    }
+    log.debug("recreate : {}x{}", .{ width, height });
+
     if (self.swapChain) |*swapchain| {
         swapchain.deinit();
     }
@@ -625,7 +629,7 @@ pub fn draw(self: *Self, camera: *Camera) !void {
     self.currentFrame = (self.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-fn createInstance(allocator: Allocator) !vulkan.VkInstance {
+fn createInstance(allocator: Allocator, platformRequiredExtensions: []const *align(1) const [:0]u8) !vulkan.VkInstance {
     var appInfo = vulkan.VkApplicationInfo{};
     appInfo.sType = vulkan.VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pApplicationName = "Test Zig";
@@ -634,13 +638,24 @@ fn createInstance(allocator: Allocator) !vulkan.VkInstance {
     appInfo.engineVersion = vulkan.VK_MAKE_VERSION(1, 0, 0);
     appInfo.apiVersion = vulkan.VK_API_VERSION_1_0;
 
+    const allRequiredExtensions = try allocator.alloc(*align(1) const [:0]u8, requiredExtensions.len + platformRequiredExtensions.len);
+    for (requiredExtensions, 0..) |ext, i| {
+        allRequiredExtensions[i] = ext;
+    }
+
+    for (platformRequiredExtensions, requiredExtensions.len..) |ext, i| {
+        allRequiredExtensions[i] = ext;
+    }
+
+    defer allocator.free(allRequiredExtensions);
+
     var createInfo = vulkan.VkInstanceCreateInfo{};
     createInfo.sType = vulkan.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &appInfo;
     createInfo.enabledLayerCount = 0;
     createInfo.flags = createInfo.flags | vulkan.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-    createInfo.enabledExtensionCount = requiredExtensions.len;
-    createInfo.ppEnabledExtensionNames = @ptrCast(&requiredExtensions);
+    createInfo.enabledExtensionCount = @intCast(allRequiredExtensions.len);
+    createInfo.ppEnabledExtensionNames = @ptrCast(allRequiredExtensions.ptr);
 
     if (builtin.mode == .Debug) {
         const checkValidationLayerSupport = layerSupported: {
@@ -843,17 +858,6 @@ fn createDevice(physicalDevice: vulkan.VkPhysicalDevice, familyIndice: QueueFami
     return device;
 }
 
-fn createSurface(instance: vulkan.VkInstance, display: *wl.Display, surface: *wl.Surface) !vulkan.VkSurfaceKHR {
-    var createInfo = vulkan.VkWaylandSurfaceCreateInfoKHR{};
-    createInfo.sType = vulkan.VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
-    createInfo.display = @ptrCast(display);
-    createInfo.surface = @ptrCast(surface);
-
-    var vulkanSurface: vulkan.VkSurfaceKHR = null;
-    if (vulkan.VK_SUCCESS != vulkan.vkCreateWaylandSurfaceKHR(instance, &createInfo, null, &vulkanSurface)) return error.FailedToCreateVulkanSurface;
-    return vulkanSurface;
-}
-
 const SwapChainSupportDetails = struct {
     allocator: Allocator,
     capabilities: vulkan.VkSurfaceCapabilitiesKHR,
@@ -1029,7 +1033,7 @@ fn createGraphicPipeline(
 
     const shaderStages = [_]vulkan.VkPipelineShaderStageCreateInfo{ vertShaderStageInfo, fragShaderStageInfo };
 
-    const dynamicStates = [_]c_uint{
+    const dynamicStates = [_]vulkan.VkDynamicState{
         vulkan.VK_DYNAMIC_STATE_VIEWPORT,
         vulkan.VK_DYNAMIC_STATE_SCISSOR,
     };
@@ -1182,7 +1186,7 @@ fn createShaderModule(allocator: Allocator, device: vulkan.VkDevice, code: [:0]c
     return module;
 }
 
-fn createRenderPass(device: vulkan.VkDevice, physicalDevice: vulkan.VkPhysicalDevice, swapChainImageFormat: vulkan.VkFormat, msaaSamples: vulkan.VkSampleCountFlags) !vulkan.VkRenderPass {
+fn createRenderPass(device: vulkan.VkDevice, physicalDevice: vulkan.VkPhysicalDevice, swapChainImageFormat: vulkan.VkFormat, msaaSamples: vulkan.VkSampleCountFlagBits) !vulkan.VkRenderPass {
     var colorAttachment = vulkan.VkAttachmentDescription{};
     colorAttachment.format = swapChainImageFormat;
     colorAttachment.samples = msaaSamples;
@@ -2004,7 +2008,9 @@ fn endSingleTimeCommands(
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    if (vulkan.VK_SUCCESS != vulkan.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null)) {
+    const e = vulkan.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+    if (vulkan.VK_SUCCESS != e) {
+        log.err("failed {}", .{e});
         return error.QueueSubmitFailed;
     }
     if (vulkan.VK_SUCCESS != vulkan.vkQueueWaitIdle(graphicsQueue)) {
