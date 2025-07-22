@@ -78,7 +78,7 @@ fn newListener(self: *Self) Wsi.Listener {
         .vtable = .{
             .close = close,
             .draw = drawListener,
-            .invalidateSurface = recreate,
+            .invalidateSurface = invalidateSurface,
             .keyboardEvent = keyboardEvent,
             .mouseMove = mouseMove,
         },
@@ -95,7 +95,10 @@ fn drawListener(ptr: *anyopaque) void {
     if (self.renderer != null) {
         self.draw() catch |e| {
             if (e == error.RecreateSwapchain) {
-                self.renderer.?.recreate(self.width, self.height) catch unreachable; // TODO
+                log.debug("error drawing : {}, recreating swapchain", .{e});
+                self.renderer.?.recreate(self.width, self.height) catch |e2| {
+                    log.err("failed to recreate renderer : {}", .{e2});
+                };
             } else {
                 log.err("while drawing: {}", .{e});
             }
@@ -103,17 +106,17 @@ fn drawListener(ptr: *anyopaque) void {
     }
 }
 
-fn recreate(ptr: *anyopaque, width: i32, height: i32) void {
+fn invalidateSurface(ptr: *anyopaque, width: i32, height: i32) void {
     const self = @as(*Self, @ptrCast(@alignCast(ptr)));
-    log.debug("recreate {} {}", .{ width, height });
+    log.debug("invalidateSurface {}x{}", .{ width, height });
 
     self.width = width;
     self.height = height;
 
     if (self.renderer) |*renderer| {
         renderer.recreate(width, height) catch |e| {
-            std.log.err("recreate {}", .{e});
-        }; // TODO    std.log.err("recreate", .{});
+            log.err("recreate {}", .{e});
+        };
     }
 }
 

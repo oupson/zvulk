@@ -136,7 +136,7 @@ const Swapchain = struct {
         width: i32,
         height: i32,
     ) !@This() {
-        log.debug("creating", .{});
+        log.debug("creating swapchain {}x{}", .{ width, height });
         const swapChain, const format, const extent = try createSwapChain(
             allocator,
             device,

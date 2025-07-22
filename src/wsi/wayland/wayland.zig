@@ -142,7 +142,6 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn dispatch(self: *Self) !void {
-    log.debug("dispatch", .{});
     self.listener.vtable.draw(self.listener.ptr);
     if (self.context.display.dispatch() != .SUCCESS) return error.DispatchFailed;
 }
@@ -197,12 +196,12 @@ fn xdgToplevelListener(_: *xdg.Toplevel, event: xdg.Toplevel.Event, wsi: *Self) 
         .configure => |configure| {
             const newWidth = if (configure.width == 0) 640 else configure.width;
             const newHeight = if (configure.height == 0) 400 else configure.height;
+            log.debug("xdg top level configure {}x{}", .{ newWidth, newHeight });
             wsi.listener.vtable.invalidateSurface(
                 wsi.listener.ptr,
                 newWidth,
                 newHeight,
             );
-            log.debug("xdg top level configure {}x{}", .{ newWidth, newHeight });
         },
         .wm_capabilities => {},
         .configure_bounds => {},
@@ -244,7 +243,6 @@ fn wlSeatListener(seat: *wl.Seat, event: wl.Seat.Event, data: *Self) void {
 
 fn wlPointerListener(pointer: *wl.Pointer, event: wl.Pointer.Event, data: *Self) void {
     _ = pointer;
-    //log.debug("{any} {any}", .{ event, data.camera });
     switch (event) {
         .enter => |enter| {
             data.context.pointer.?.setCursor(enter.serial, null, 0, 0);
@@ -286,7 +284,6 @@ fn wlKeyboardListener(keyboard: *wl.Keyboard, event: wl.Keyboard.Event, self: *S
             const keys = e.keys.slice(u32);
             for (keys) |key| {
                 const xkbKey = Keyboard.toLower(self.context.keyboardParser.parseKeyCode(key));
-                log.debug("{} {} {}", .{ true, xkbKey, self.context.keyboard_state });
                 const wsi_key = switch (xkbKey) {
                     Keyboard.xkbcommon.XKB_KEY_w => Wsi.Key{ .Char = 'W' },
                     Keyboard.xkbcommon.XKB_KEY_s => Wsi.Key{ .Char = 'S' },
