@@ -1,5 +1,13 @@
 const std = @import("std");
 const mem = std.mem;
+const Allocator = mem.Allocator;
+
+const log = std.log.scoped(.wayland);
+
+const vulkan = @cImport({
+    @cInclude("vulkan/vulkan.h");
+    @cInclude("vulkan/vulkan_wayland.h");
+});
 
 const wayland = @import("wayland");
 const wl = wayland.client.wl;
@@ -8,6 +16,11 @@ const zxdg = wayland.client.zxdg;
 const zwp = wayland.client.zwp;
 
 const Keyboard = @import("keyboard.zig");
+const Wsi = @import("../wsi.zig");
+
+pub const Listener = Wsi.Listener;
+pub const ListenerVTable = Wsi.ListenerVtable;
+pub const KeyboardEvent = Wsi.KeyboardEvent;
 
 const Context = struct {
     shm: ?*wl.Shm = null,
@@ -37,18 +50,35 @@ const Context = struct {
 
 const Self = @This();
 
+allocator: Allocator,
 context: Context = .{},
+listener: Wsi.Listener,
 
-// fn createSurface(instance: vulkan.VkInstance, display: *wl.Display, surface: *wl.Surface) !vulkan.VkSurfaceKHR {
-//     var createInfo = vulkan.VkWaylandSurfaceCreateInfoKHR{};
-//     createInfo.sType = vulkan.VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
-//     createInfo.display = @ptrCast(display);
-//     createInfo.surface = @ptrCast(surface);
+const required_extensions: [1]*align(1) const [:0]u8 = .{
+    @ptrCast(vulkan.VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME),
+};
 
-//     var vulkanSurface: vulkan.VkSurfaceKHR = null;
-//     if (vulkan.VK_SUCCESS != vulkan.vkCreateWaylandSurfaceKHR(instance, &createInfo, null, &vulkanSurface)) return error.FailedToCreateVulkanSurface;
-//     return vulkanSurface;
-// }
+pub fn requiredExtensions() []const *align(1) const [:0]u8 {
+    return &required_extensions;
+}
+
+pub fn init(allocator: Allocator, listener: Wsi.Listener) !Self {
+    return Self{
+        .allocator = allocator,
+        .listener = listener,
+    };
+}
+
+pub fn createVulkanSurface(self: *const Self, vkInstance: vulkan.VkInstance) !vulkan.VkSurfaceKHR {
+    var createInfo = vulkan.VkWaylandSurfaceCreateInfoKHR{};
+    createInfo.sType = vulkan.VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+    createInfo.display = @ptrCast(self.context.display);
+    createInfo.surface = @ptrCast(self.context.surface);
+
+    var vulkanSurface: vulkan.VkSurfaceKHR = null;
+    if (vulkan.VK_SUCCESS != vulkan.vkCreateWaylandSurfaceKHR(vkInstance, &createInfo, null, &vulkanSurface)) return error.FailedToCreateVulkanSurface;
+    return vulkanSurface;
+}
 
 pub fn connect(self: *Self) !void {
     const display = try wl.Display.connect(null);
@@ -81,7 +111,7 @@ pub fn connect(self: *Self) !void {
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
 }
 
-fn deinit(self: *Self) void {
+pub fn deinit(self: *Self) void {
     self.context.keyboardParser.deinit();
     if (self.context.relative_pointer) |pointer| {
         pointer.destroy();
@@ -111,11 +141,17 @@ fn deinit(self: *Self) void {
     self.context.display.disconnect();
 }
 
+pub fn dispatch(self: *Self) !void {
+    log.debug("dispatch", .{});
+    self.listener.vtable.draw(self.listener.ptr);
+    if (self.context.display.dispatch() != .SUCCESS) return error.DispatchFailed;
+}
+
 fn registryListener(registry: *wl.Registry, event: wl.Registry.Event, data: *Self) void {
     var context = &data.context;
     switch (event) {
         .global => |global| {
-            std.log.debug("registry interface : {s}", .{global.interface});
+            log.debug("registry interface : {s}", .{global.interface});
             if (mem.orderZ(u8, global.interface, wl.Compositor.interface.name) == .eq) {
                 context.compositor = registry.bind(global.name, wl.Compositor, 1) catch return;
             } else if (mem.orderZ(u8, global.interface, wl.Shm.interface.name) == .eq) {
@@ -151,27 +187,27 @@ fn xdgSurfaceListener(xdg_surface: *xdg.Surface, event: xdg.Surface.Event, surfa
     switch (event) {
         .configure => |configure| {
             xdg_surface.ackConfigure(configure.serial);
-            std.log.info("configure", .{});
+            log.info("configure", .{});
         },
     }
 }
 
-fn xdgToplevelListener(_: *xdg.Toplevel, event: xdg.Toplevel.Event, app: *Self) void {
+fn xdgToplevelListener(_: *xdg.Toplevel, event: xdg.Toplevel.Event, wsi: *Self) void {
     switch (event) {
         .configure => |configure| {
             const newWidth = if (configure.width == 0) 640 else configure.width;
             const newHeight = if (configure.height == 0) 400 else configure.height;
-            if (app.width != newWidth or app.height != newHeight) {
-                app.width = newWidth;
-                app.height = newHeight;
-                app.recreate = true;
-            }
-            std.log.debug("xdg top level configure {}x{}", .{ app.width, app.height });
+            wsi.listener.vtable.invalidateSurface(
+                wsi.listener.ptr,
+                newWidth,
+                newHeight,
+            );
+            log.debug("xdg top level configure {}x{}", .{ newWidth, newHeight });
         },
         .wm_capabilities => {},
         .configure_bounds => {},
         .close => {
-            app.running = false;
+            wsi.listener.vtable.close(wsi.listener.ptr);
         },
     }
 }
@@ -180,10 +216,10 @@ fn wlSeatListener(seat: *wl.Seat, event: wl.Seat.Event, data: *Self) void {
     _ = seat;
     switch (event) {
         .name => |name| {
-            std.log.debug("seat name : {s}", .{name.name});
+            log.debug("seat name : {s}", .{name.name});
         },
         .capabilities => |capabilities| {
-            std.log.debug("seat capabilities : pointer = {}, keyboard = {}, touch = {}", .{
+            log.debug("seat capabilities : pointer = {}, keyboard = {}, touch = {}", .{
                 capabilities.capabilities.pointer,
                 capabilities.capabilities.keyboard,
                 capabilities.capabilities.touch,
@@ -208,7 +244,7 @@ fn wlSeatListener(seat: *wl.Seat, event: wl.Seat.Event, data: *Self) void {
 
 fn wlPointerListener(pointer: *wl.Pointer, event: wl.Pointer.Event, data: *Self) void {
     _ = pointer;
-    //std.log.debug("{any} {any}", .{ event, data.camera });
+    //log.debug("{any} {any}", .{ event, data.camera });
     switch (event) {
         .enter => |enter| {
             data.context.pointer.?.setCursor(enter.serial, null, 0, 0);
@@ -224,68 +260,70 @@ fn wlPointerListener(pointer: *wl.Pointer, event: wl.Pointer.Event, data: *Self)
         .axis_value120 => |_| {},
     }
 }
-fn relativePointerListener(relative_pointer_v1: *zwp.RelativePointerV1, event: zwp.RelativePointerV1.Event, data: *Self) void {
+fn relativePointerListener(relative_pointer_v1: *zwp.RelativePointerV1, event: zwp.RelativePointerV1.Event, self: *Self) void {
     _ = relative_pointer_v1;
     switch (event) {
         .relative_motion => |motion| {
-            data.camera.yaw += @floatCast(motion.dx_unaccel.toDouble() * 0.1);
-            data.camera.pitch += @floatCast(motion.dy_unaccel.toDouble() * 0.1);
+            self.listener.vtable.mouseMove(
+                self.listener.ptr,
+                motion.dx_unaccel.toDouble(),
+                motion.dy_unaccel.toDouble(),
+            );
         },
     }
 }
-fn wlKeyboardListener(keyboard: *wl.Keyboard, event: wl.Keyboard.Event, data: *Self) void {
+fn wlKeyboardListener(keyboard: *wl.Keyboard, event: wl.Keyboard.Event, self: *Self) void {
     _ = keyboard;
     switch (event) {
         .keymap => |keymap| {
             if (keymap.format == .xkb_v1) {
-                data.context.keyboardParser.parseKeymap(keymap.fd, keymap.size) catch unreachable;
+                self.context.keyboardParser.parseKeymap(keymap.fd, keymap.size) catch unreachable;
             } else {
-                std.log.warn("unknown keymap : {}", .{keymap.format});
+                log.warn("unknown keymap : {}", .{keymap.format});
             }
         },
         .enter => |e| {
             const keys = e.keys.slice(u32);
             for (keys) |key| {
-                const xkbKey = Keyboard.toLower(data.context.keyboardParser.parseKeyCode(key));
-                std.log.debug("{} {} {}", .{ true, xkbKey, data.context.keyboard_state });
-                switch (xkbKey) {
-                    Keyboard.xkbcommon.XKB_KEY_w => data.context.keyboard_state.forward += 1,
-                    Keyboard.xkbcommon.XKB_KEY_s => data.context.keyboard_state.forward -= 1,
-                    Keyboard.xkbcommon.XKB_KEY_d => data.context.keyboard_state.right += 1,
-                    Keyboard.xkbcommon.XKB_KEY_a => data.context.keyboard_state.right -= 1,
-                    Keyboard.xkbcommon.XKB_KEY_space => data.context.keyboard_state.up += 1,
-                    Keyboard.xkbcommon.XKB_KEY_Shift_L => data.context.keyboard_state.up -= 1,
-                    else => {},
-                }
+                const xkbKey = Keyboard.toLower(self.context.keyboardParser.parseKeyCode(key));
+                log.debug("{} {} {}", .{ true, xkbKey, self.context.keyboard_state });
+                const wsi_key = switch (xkbKey) {
+                    Keyboard.xkbcommon.XKB_KEY_w => Wsi.Key{ .Char = 'W' },
+                    Keyboard.xkbcommon.XKB_KEY_s => Wsi.Key{ .Char = 'S' },
+                    Keyboard.xkbcommon.XKB_KEY_d => Wsi.Key{ .Char = 'D' },
+                    Keyboard.xkbcommon.XKB_KEY_a => Wsi.Key{ .Char = 'A' },
+                    Keyboard.xkbcommon.XKB_KEY_space => .Space,
+                    Keyboard.xkbcommon.XKB_KEY_Shift_L => .Shift,
+                    else => continue,
+                };
+
+                self.listener.vtable.keyboardEvent(
+                    self.listener.ptr,
+                    .{ .KeyUp = wsi_key },
+                );
             }
         },
         .leave => {},
         .key => |key| {
-            const xkbKey = Keyboard.toLower(data.context.keyboardParser.parseKeyCode(key.key));
-            if (key.state == .released) {
-                switch (xkbKey) {
-                    Keyboard.xkbcommon.XKB_KEY_w => data.context.keyboard_state.forward -= 1,
-                    Keyboard.xkbcommon.XKB_KEY_s => data.context.keyboard_state.forward += 1,
-                    Keyboard.xkbcommon.XKB_KEY_d => data.context.keyboard_state.right -= 1,
-                    Keyboard.xkbcommon.XKB_KEY_a => data.context.keyboard_state.right += 1,
-                    Keyboard.xkbcommon.XKB_KEY_space => data.context.keyboard_state.up -= 1,
-                    Keyboard.xkbcommon.XKB_KEY_Shift_L => data.context.keyboard_state.up += 1,
-                    else => {},
-                }
-            } else {
-                switch (xkbKey) {
-                    Keyboard.xkbcommon.XKB_KEY_w => data.context.keyboard_state.forward += 1,
-                    Keyboard.xkbcommon.XKB_KEY_s => data.context.keyboard_state.forward -= 1,
-                    Keyboard.xkbcommon.XKB_KEY_d => data.context.keyboard_state.right += 1,
-                    Keyboard.xkbcommon.XKB_KEY_a => data.context.keyboard_state.right -= 1,
-                    Keyboard.xkbcommon.XKB_KEY_space => data.context.keyboard_state.up += 1,
-                    Keyboard.xkbcommon.XKB_KEY_Shift_L => data.context.keyboard_state.up -= 1,
-                    else => {},
-                }
-            }
+            const xkbKey = Keyboard.toLower(self.context.keyboardParser.parseKeyCode(key.key));
+
+            const wsi_key = switch (xkbKey) {
+                Keyboard.xkbcommon.XKB_KEY_w => Wsi.Key{ .Char = 'W' },
+                Keyboard.xkbcommon.XKB_KEY_s => Wsi.Key{ .Char = 'S' },
+                Keyboard.xkbcommon.XKB_KEY_d => Wsi.Key{ .Char = 'D' },
+                Keyboard.xkbcommon.XKB_KEY_a => Wsi.Key{ .Char = 'A' },
+                Keyboard.xkbcommon.XKB_KEY_space => .Space,
+                Keyboard.xkbcommon.XKB_KEY_Shift_L => .Shift,
+                else => return,
+            };
+
+            self.listener.vtable.keyboardEvent(
+                self.listener.ptr,
+                if (key.state == .released) .{ .KeyUp = wsi_key } else .{ .KeyDown = wsi_key },
+            );
         },
         .modifiers => |modifiers| {
-            data.context.keyboardParser.setModifier(modifiers.mods_depressed, modifiers.mods_latched, modifiers.mods_locked, modifiers.group);
+            self.context.keyboardParser.setModifier(modifiers.mods_depressed, modifiers.mods_latched, modifiers.mods_locked, modifiers.group);
         },
         .repeat_info => {},
     }

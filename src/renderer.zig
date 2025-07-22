@@ -531,6 +531,8 @@ pub fn recreate(self: *Self, width: i32, height: i32) !void {
     if (vulkan.VK_SUCCESS != vulkan.vkDeviceWaitIdle(self.device)) {
         return error.WaitDeviceIdleFailed;
     }
+    log.debug("recreate : {}x{}", .{ width, height });
+
     if (self.swapChain) |*swapchain| {
         swapchain.deinit();
     }

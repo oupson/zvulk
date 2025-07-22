@@ -105,7 +105,7 @@ fn drawListener(ptr: *anyopaque) void {
 
 fn recreate(ptr: *anyopaque, width: i32, height: i32) void {
     const self = @as(*Self, @ptrCast(@alignCast(ptr)));
-    log.debug("recreate {} {}", .{ self.width, self.height });
+    log.debug("recreate {} {}", .{ width, height });
 
     self.width = width;
     self.height = height;
@@ -162,7 +162,7 @@ pub fn connect(self: *Self) !void {
     self.renderer = renderer;
     self.renderer.?.updateWorld(self.world);
 
-    try self.renderer.?.recreate(0, 0);
+    try self.renderer.?.recreate(self.width, self.height);
     try self.draw();
 }
 

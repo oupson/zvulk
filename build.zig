@@ -104,6 +104,8 @@ pub fn build(b: *std.Build) !void {
 
             exe.linkSystemLibrary("wayland-client");
             exe.linkSystemLibrary("xkbcommon");
+
+            exe.linkSystemLibrary("vulkan");
         },
         .windows => {
             var env = try std.process.getEnvMap(b.allocator);
@@ -123,6 +125,8 @@ pub fn build(b: *std.Build) !void {
                 "user32",
             };
             for (static_libs) |libl| exe.linkSystemLibrary(libl);
+
+            exe.linkSystemLibrary("vulkan-1");
         },
         else => {
             unreachable;
@@ -130,8 +134,6 @@ pub fn build(b: *std.Build) !void {
     }
 
     exe.linkLibC();
-
-    exe.linkSystemLibrary("vulkan-1");
 
     exe.root_module.addAnonymousImport("shaders/fragment.spv", .{
         .root_source_file = output_frag,
