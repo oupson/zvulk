@@ -57,6 +57,21 @@ const Leaf = union(LeafType) {
             self.* = .{ .full = value.? };
         }
     }
+
+    pub fn size(self: Leaf) usize {
+        var res: usize = 1;
+
+        switch (self) {
+            .full => {},
+            .leaves => |leaves| {
+                for (leaves) |leaf| {
+                    res += leaf.size();
+                }
+            },
+        }
+
+        return res;
+    }
 };
 
 pub fn init(allocator: Allocator) Self {
@@ -151,6 +166,10 @@ pub fn compact(self: *Self) void {
     if (self.leaf == .leaves) {
         self.leaf.compact(self.allocator);
     }
+}
+
+pub fn size(self: *Self) usize {
+    return self.leaf.size();
 }
 
 const testing = std.testing;
@@ -308,3 +327,27 @@ test "expect when all putBlock and compact then getBlock return this block" {
         }
     }
 }
+
+test "expect when empty chunk size is 1" {
+    var c: @This() = .init(std.testing.allocator);
+    defer c.deinit();
+    try testing.expectEqual(1, c.size());
+}
+
+test "expect when full chunk size is 1" {
+    var c: @This() = .init(std.testing.allocator);
+    defer c.deinit();
+
+    for (0..CHUNK_SIZE) |z| {
+        for (0..CHUNK_SIZE) |y| {
+            for (0..CHUNK_SIZE) |x| {
+                const block = z * CHUNK_SIZE * CHUNK_SIZE + y * CHUNK_SIZE + x;
+                try c.putBlock(x, y, z, @truncate(block));
+            }
+        }
+    }
+
+    try testing.expectEqual(1, c.size());
+}
+
+// TODO: Other tests

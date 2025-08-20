@@ -41,6 +41,8 @@ pub fn init(allocator: Allocator) !Self {
 
     const world = try allocator.alloc([10][10]Chunk, 10);
 
+    var size: usize = 0;
+
     for (world) |*zchunk| {
         for (zchunk) |*ychunk| {
             for (ychunk) |*c| {
@@ -53,9 +55,14 @@ pub fn init(allocator: Allocator) !Self {
                 }
 
                 try c.putBlock(1, 2, 1, 3);
+                c.compact();
+
+                size += c.size();
             }
         }
     }
+
+    std.log.info("World size: {}", .{size * @sizeOf(u64)});
 
     const textureManager = try TextureManager.init(allocator);
 
