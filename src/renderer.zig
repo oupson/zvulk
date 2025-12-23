@@ -1171,7 +1171,7 @@ fn createGraphicPipeline(
 
 fn createShaderModule(allocator: Allocator, device: vulkan.VkDevice, code: [:0]const u8) !vulkan.VkShaderModule {
     // todo better way
-    const alignedCode = try allocator.alignedAlloc(u8, 32, code.len);
+    const alignedCode = try allocator.alignedAlloc(u8, std.mem.Alignment.@"32", code.len);
     defer allocator.free(alignedCode);
     @memcpy(alignedCode, code);
 

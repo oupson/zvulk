@@ -31,7 +31,10 @@ pub fn main() !void {
     defer std.process.argsFree(arena, args);
 
     if (args.len != 3) {
-        try std.io.getStdErr().writeAll(usage);
+        const stderr = std.Progress.lockStderrWriter(&.{});
+        defer std.Progress.unlockStderrWriter();
+        defer stderr.flush() catch {};
+        try stderr.writeAll(usage);
         return error.MissingInputOutput;
     }
 
@@ -55,9 +58,9 @@ pub fn main() !void {
     const cwd = std.fs.cwd();
     const input_file = try cwd.openFile(input_file_path, .{ .mode = .read_only });
     defer input_file.close();
-    const meta = try input_file.metadata();
+    const meta = try input_file.stat();
 
-    const input_buffer = try arena.alloc(u8, meta.size());
+    const input_buffer = try arena.alloc(u8, meta.size);
     defer arena.free(input_buffer);
     _ = try input_file.readAll(input_buffer);
 
@@ -84,7 +87,10 @@ pub fn main() !void {
     const status = shaderc.shaderc_result_get_compilation_status(result);
     if (status != shaderc.shaderc_compilation_status_success) {
         const error_message: [*:0]const u8 = shaderc.shaderc_result_get_error_message(result);
-        try std.io.getStdErr().writeAll(std.mem.span(error_message));
+        const stderr = std.Progress.lockStderrWriter(&.{});
+        defer std.Progress.unlockStderrWriter();
+        defer stderr.flush() catch {};
+        try stderr.writeAll(std.mem.span(error_message));
         return error.CompilationFailed;
     }
 
